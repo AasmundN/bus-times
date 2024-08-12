@@ -2,7 +2,7 @@
  * Private includes
  */
 #include "Wire.h"
-#include "bus_data.h"
+#include "bus_stop_data.h"
 #include "credentials.h"
 
 /*
@@ -30,17 +30,24 @@
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
 /*
- * SW hardware timer
+ * Additional data
  */
 #define SW_DEBOUNCE_TRESHOLD 5
 
-hw_timer_t *sw_timer = NULL;
+volatile direction_t current_direction = INBOUND;
+bus_stop_data_t bus_stop_data;
+
+volatile bool show_loading_screen = false;
+volatile bool refresh_data = true;
 volatile uint8_t sw_debounce_count = 0;
+
+hw_timer_t *sw_timer = NULL;
+hw_timer_t *data_timer = NULL;
 
 /*
  * SW timer interrupt callback
  */
-void IRAM_ATTR swTimerISR()
+void IRAM_ATTR sw_timer_isr()
 {
   if (digitalRead(SW_PIN) == HIGH)
   {
@@ -48,8 +55,25 @@ void IRAM_ATTR swTimerISR()
     return;
   }
 
-  if (++sw_debounce_count == SW_DEBOUNCE_TRESHOLD)
-    digitalWrite(LED_BUILTIN_PIN, !digitalRead(LED_BUILTIN_PIN));
+  if (++sw_debounce_count != SW_DEBOUNCE_TRESHOLD)
+    return;
+
+  if (current_direction == INBOUND)
+    current_direction = OUTBOUND;
+  else
+    current_direction = INBOUND;
+
+  timerWrite(data_timer, 0);
+  refresh_data = true;
+  show_loading_screen = true;
+}
+
+/*
+ * DATA refresh timer interrupt callback
+ */
+void IRAM_ATTR data_timer_isr()
+{
+  refresh_data = true;
 }
 
 void setup()
@@ -62,13 +86,9 @@ void setup()
   /*
    * Init OLED screen
    */
-  if (!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS))
-  {
-    Serial.println(F("SSD1306 allocation failed"));
-    for (;;)
-      ;
-  }
-  display.display();
+  while (!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS))
+    ;
+  oled_write_loading_screen(current_direction, &display);
 
   /*
    * Connect WiFi
@@ -79,21 +99,45 @@ void setup()
   digitalWrite(LED_BUILTIN_PIN, HIGH);
 
   /*
-   * Setup SW hardware timer
+   * Setup SW and data refresh hardware timers
    */
   const uint16_t PRESCALER = 80;
-  const uint8_t TIMER_ID = 0;
-  sw_timer = timerBegin(TIMER_ID, PRESCALER, true);
 
-  timerAttachInterrupt(sw_timer, swTimerISR, true);
+  sw_timer = timerBegin(0, PRESCALER, true);
+  data_timer = timerBegin(1, PRESCALER, true);
 
-  const uint16_t ALARM_VALUE_us = 10000;
-  timerAlarmWrite(sw_timer, ALARM_VALUE_us, true);
+  timerAttachInterrupt(sw_timer, sw_timer_isr, true);
+  timerAttachInterrupt(data_timer, data_timer_isr, true);
+
+  const uint64_t SW_ALARM_VALUE_us = 10000;
+  const uint64_t DATA_ALARM_VALUE_us = 60000000;
+
+  timerAlarmWrite(sw_timer, SW_ALARM_VALUE_us, true);
+  timerAlarmWrite(data_timer, DATA_ALARM_VALUE_us, true);
+
   timerAlarmEnable(sw_timer);
-
-  fetch_bus_data(INBOUND);
+  timerAlarmEnable(data_timer);
 }
 
 void loop()
 {
+  if (WiFi.status() != WL_CONNECTED)
+  {
+    digitalWrite(LED_BUILTIN_PIN, LOW);
+    abort();
+  }
+
+  if (!refresh_data) return;
+
+  if (show_loading_screen)
+    oled_write_loading_screen(current_direction, &display);
+  show_loading_screen = false;
+
+  fetch_bus_stop_data(&bus_stop_data, current_direction);
+
+  if (bus_stop_data.error) return;
+
+  refresh_data = false;
+
+  oled_write_bus_stop_data(&bus_stop_data, &display);
 }
