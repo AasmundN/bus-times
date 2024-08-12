@@ -3,32 +3,59 @@
 #include <esp_wifi.h>
 #include <wifi.h>
 
-#define LED_BUILTIN 2
-#define REQUEST_FREQ 10000
-#define BAUD_RATE 9600
+#define LED_BUILTIN_PIN 2
+#define SW_PIN 23
 
-unsigned long lastRequest = 0;
+#define BAUD_RATE 9600
+#define SW_DEBOUNCE_TRESHOLD 5
+
+hw_timer_t *swTimer = NULL;
+volatile uint8_t swDebounceCount = 0;
+
+void IRAM_ATTR swTimerISR()
+{
+  if (digitalRead(SW_PIN) == HIGH)
+  {
+    swDebounceCount = 0;
+    return;
+  }
+
+  if (++swDebounceCount == SW_DEBOUNCE_TRESHOLD)
+    digitalWrite(LED_BUILTIN_PIN, !digitalRead(LED_BUILTIN_PIN));
+}
 
 void setup()
 {
   Serial.begin(BAUD_RATE);
 
-  // configure built in LED
-  pinMode(LED_BUILTIN, OUTPUT);
+  /*
+   * Configure pins
+   */
+  pinMode(LED_BUILTIN_PIN, OUTPUT);
+  pinMode(SW_PIN, INPUT_PULLUP);
 
-  // connect to WiFi
-  Serial.println("Connecting to WiFi...");
-
-  // wifi credentials (ssid and password) must be defined in a credentials.h file
+  /*
+   * Connect to WiFi
+   */
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
-  // wait till connection succeeds
   while (WiFi.status() != WL_CONNECTED)
     ;
 
-  // successfully connected to WiFi
-  Serial.println("Connected to WiFi!");
-  digitalWrite(LED_BUILTIN, HIGH);
+  digitalWrite(LED_BUILTIN_PIN, HIGH);
+
+  /*
+   * Configure SW timer
+   */
+  const uint16_t PRESCALER = 80;
+  const uint8_t TIMER_ID = 0;
+  swTimer = timerBegin(TIMER_ID, PRESCALER, true);
+
+  timerAttachInterrupt(swTimer, swTimerISR, true);
+
+  const uint16_t ALARM_VALUE_us = 10000;
+  timerAlarmWrite(swTimer, ALARM_VALUE_us, true);
+  timerAlarmEnable(swTimer);
 }
 
 void loop()
