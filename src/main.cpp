@@ -72,6 +72,7 @@ void IRAM_ATTR sw_timer_isr()
 void IRAM_ATTR data_timer_isr()
 {
   refresh_data = true;
+  refresh_screen = true;
 }
 
 void setup()
