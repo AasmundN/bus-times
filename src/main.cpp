@@ -1,7 +1,6 @@
 /*
  * Private includes
  */
-#include "Wire.h"
 #include "bus_stop_data.h"
 #include "credentials.h"
 
@@ -34,11 +33,11 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
  */
 #define SW_DEBOUNCE_TRESHOLD 5
 
-volatile direction_t current_direction = INBOUND;
+volatile bus_stop_t current_bus_stop = EAST;
 bus_stop_data_t bus_stop_data;
 
-volatile bool show_loading_screen = false;
 volatile bool refresh_data = true;
+volatile bool refresh_screen = true;
 volatile uint8_t sw_debounce_count = 0;
 
 hw_timer_t *sw_timer = NULL;
@@ -58,14 +57,13 @@ void IRAM_ATTR sw_timer_isr()
   if (++sw_debounce_count != SW_DEBOUNCE_TRESHOLD)
     return;
 
-  if (current_direction == INBOUND)
-    current_direction = OUTBOUND;
+  if (current_bus_stop == EAST)
+    current_bus_stop = WEST;
   else
-    current_direction = INBOUND;
+    current_bus_stop = EAST;
 
   timerWrite(data_timer, 0);
-  refresh_data = true;
-  show_loading_screen = true;
+  refresh_screen = true;
 }
 
 /*
@@ -88,7 +86,7 @@ void setup()
    */
   while (!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS))
     ;
-  oled_write_loading_screen(current_direction, &display);
+  oled_write_loading_screen(current_bus_stop, &display);
 
   /*
    * Connect WiFi
@@ -127,17 +125,17 @@ void loop()
     abort();
   }
 
-  if (!refresh_data) return;
+  if (refresh_data)
+  {
+    fetch_bus_stop_data(&bus_stop_data);
 
-  if (show_loading_screen)
-    oled_write_loading_screen(current_direction, &display);
-  show_loading_screen = false;
+    if (!bus_stop_data.error)
+      refresh_data = false;
+  }
 
-  fetch_bus_stop_data(&bus_stop_data, current_direction);
-
-  if (bus_stop_data.error) return;
-
-  refresh_data = false;
-
-  oled_write_bus_stop_data(&bus_stop_data, &display);
+  if (refresh_screen)
+  {
+    oled_write_bus_stop_data(current_bus_stop, &bus_stop_data, &display);
+    refresh_screen = false;
+  }
 }

@@ -8,23 +8,90 @@
  */
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
-const char *api_url_inbound = "https://mpolden.no/atb/v2/departures/42282?direction=inbound";
-const char *api_url_outbound = "https://mpolden.no/atb/v2/departures/42282?direction=outbound";
+const char *api_url_bus_stop_data = "https://mpolden.no/atb/v2/departures/42282";
 
-void fetch_bus_stop_data(bus_stop_data_t *bus_stop_data, direction_t direction)
+typedef enum
+{
+  THREE = 3,
+  TWELVE = 12,
+  FOURTEEN = 14,
+  FIFTEEN = 15,
+  FORTY_THREE = 43,
+} line_t;
+
+bus_stop_t bus_data_to_bus_stop(line_t line, direction_t direction)
+{
+  switch (line)
+  {
+  case THREE:
+    return direction == INBOUND ? EAST : WEST;
+
+  case TWELVE:
+    return direction == INBOUND ? EAST : WEST;
+
+  case FOURTEEN:
+    return direction == INBOUND ? WEST : EAST;
+
+  case FORTY_THREE:
+    return direction == INBOUND ? WEST : EAST;
+
+  default:
+    break;
+  }
+
+  return NONE;
+}
+
+void parse_bus_data(bus_data_t *bus_data, JsonDocument *bus_data_json, uint8_t departure_index)
+{
+  const direction_t direction = (direction_t)(bool)(*bus_data_json)["departures"][departure_index]["isGoingTowardsCentrum"];
+  bus_data->direction = direction;
+
+  const char *dest = (*bus_data_json)["departures"][departure_index]["destination"];
+  const char *space = strchr(dest, ' ');
+  size_t dest_size = strlen(dest);
+
+  if (space != NULL)
+    dest_size = (int)(space - dest);
+
+  // special case for 'A Strindheim'
+  if (dest[0] == 'A')
+    dest_size = 12;
+
+  memcpy(bus_data->dest, dest, dest_size);
+
+  const char *dots = "...";
+  if (space != NULL)
+    strcat(bus_data->dest, dots);
+
+  const char *line = (*bus_data_json)["departures"][departure_index]["line"];
+  size_t line_size = strlen(line);
+
+  // align bus numbers
+  if (line_size == 1)
+  {
+    bus_data->line[0] = ' ';
+    memcpy(bus_data->line + 1, line, line_size);
+  }
+  else
+  {
+    memcpy(bus_data->line, line, line_size);
+  }
+}
+
+void fetch_bus_stop_data(bus_stop_data_t *bus_stop_data)
 {
   HTTPClient http;
 
   memset(bus_stop_data, 0, sizeof(*bus_stop_data));
-  bus_stop_data->direction = direction;
-  bus_stop_data->error = false;
 
-  if (direction == INBOUND)
-    http.begin(api_url_inbound);
-  else
-    http.begin(api_url_outbound);
+  http.begin(api_url_bus_stop_data);
 
   int status = http.GET();
 
@@ -35,9 +102,12 @@ void fetch_bus_stop_data(bus_stop_data_t *bus_stop_data, direction_t direction)
   }
 
   const char *payload = http.getString().c_str();
-  JsonDocument doc;
 
-  DeserializationError error = deserializeJson(doc, payload);
+  http.end();
+
+  JsonDocument bus_data_json;
+
+  DeserializationError error = deserializeJson(bus_data_json, payload);
 
   if (error)
   {
@@ -45,51 +115,36 @@ void fetch_bus_stop_data(bus_stop_data_t *bus_stop_data, direction_t direction)
     return;
   }
 
-  for (int i = 0; i < NUM_BUSSES; i++)
+  bus_data_t bus_data;
+
+  uint8_t departure_index = 0, east_index = 0, west_index = 0;
+
+  while (east_index < NUM_BUSSES || west_index < NUM_BUSSES)
   {
-    const char *dest = doc["departures"][i]["destination"];
-    const char *space = strchr(dest, ' ');
-    size_t dest_size = strlen(dest);
+    memset(&bus_data, 0, sizeof(bus_data));
+    parse_bus_data(&bus_data, &bus_data_json, departure_index++);
 
-    if (space != NULL)
-      dest_size = (int)(space - dest);
+    const bus_stop_t bus_stop = bus_data_to_bus_stop((line_t)atoi(bus_data.line), bus_data.direction);
 
-    // special case for 'A Strindheim'
-    if (dest[0] == 'A')
-      dest_size = 12;
-
-    memcpy(bus_stop_data->busses[i].dest, dest, dest_size);
-
-    const char *dots = "...";
-    if (space != NULL)
-      strcat(bus_stop_data->busses[i].dest, dots);
-
-    const char *line = doc["departures"][i]["line"];
-    size_t line_size = strlen(line);
-
-    // align bus numbers
-    if (line_size == 1)
+    if (bus_stop == EAST && east_index < NUM_BUSSES)
     {
-      bus_stop_data->busses[i].line[0] = ' ';
-      memcpy(bus_stop_data->busses[i].line + 1, line, line_size);
+      memcpy(&(bus_stop_data->busses[bus_stop][east_index++]), &bus_data, sizeof(bus_data));
     }
-    else
+    else if (bus_stop == WEST && west_index < NUM_BUSSES)
     {
-      memcpy(bus_stop_data->busses[i].line, line, line_size);
+      memcpy(&(bus_stop_data->busses[bus_stop][west_index++]), &bus_data, sizeof(bus_data));
     }
   }
-
-  http.end();
 }
 
-void oled_write_loading_screen(direction_t direction, Adafruit_SSD1306 *display)
+void oled_write_loading_screen(bus_stop_t bus_stop, Adafruit_SSD1306 *display)
 {
   display->clearDisplay();
 
   display->setTextSize(1);
   display->setTextColor(SSD1306_WHITE);
   display->setCursor(0, 0);
-  display->println(F(direction ? "Fra sentrum" : "Mot sentrum"));
+  display->println(F(bus_stop ? "Voll Studentby West" : "Voll Studentby East"));
 
   display->drawLine(0, display->height() / 4 - 1, display->width(), display->height() / 4 - 1, SSD1306_WHITE);
 
@@ -98,7 +153,7 @@ void oled_write_loading_screen(direction_t direction, Adafruit_SSD1306 *display)
   display->display();
 }
 
-void oled_write_bus_stop_data(bus_stop_data_t *bus_stop_data, Adafruit_SSD1306 *display)
+void oled_write_bus_stop_data(bus_stop_t bus_stop, bus_stop_data_t *bus_stop_data, Adafruit_SSD1306 *display)
 {
   display->clearDisplay();
 
@@ -106,7 +161,7 @@ void oled_write_bus_stop_data(bus_stop_data_t *bus_stop_data, Adafruit_SSD1306 *
   display->setTextColor(SSD1306_WHITE);
 
   display->setCursor(0, 0);
-  display->println(F(bus_stop_data->direction ? "Fra sentrum" : "Mot sentrum"));
+  display->println(F(bus_stop ? "Voll Studentby West" : "Voll Studentby East"));
 
   display->drawLine(0, display->height() / 4 - 1, display->width(), display->height() / 4 - 1, SSD1306_WHITE);
 
@@ -115,9 +170,9 @@ void oled_write_bus_stop_data(bus_stop_data_t *bus_stop_data, Adafruit_SSD1306 *
     display->setCursor(0, display->height() / 4 + 8 + i * display->height() / 4);
 
     char bus_data_string[32];
-    sprintf(bus_data_string, "%s %s", bus_stop_data->busses[i].line, bus_stop_data->busses[i].dest);
+    sprintf(bus_data_string, "%s %s", bus_stop_data->busses[bus_stop][i].line, bus_stop_data->busses[bus_stop][i].dest);
 
-    display->println(F(bus_data_string));
+    display->print(F(bus_data_string));
   }
 
   display->display();
