@@ -3,6 +3,7 @@
  */
 #include "bus_stop_data.h"
 #include "credentials.h"
+#include "esp_sntp.h"
 
 /*
  * External includes
@@ -10,6 +11,7 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <Arduino.h>
+#include <time.h>
 #include <wifi.h>
 
 /*
@@ -95,7 +97,6 @@ void setup()
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   while (WiFi.status() != WL_CONNECTED)
     ;
-  digitalWrite(LED_BUILTIN_PIN, HIGH);
 
   /*
    * Setup SW and data refresh hardware timers
@@ -109,13 +110,24 @@ void setup()
   timerAttachInterrupt(data_timer, data_timer_isr, true);
 
   const uint64_t SW_ALARM_VALUE_us = 10000;
-  const uint64_t DATA_ALARM_VALUE_us = 60000000;
+  const uint64_t DATA_ALARM_VALUE_us = 20000000;
 
   timerAlarmWrite(sw_timer, SW_ALARM_VALUE_us, true);
   timerAlarmWrite(data_timer, DATA_ALARM_VALUE_us, true);
 
   timerAlarmEnable(sw_timer);
   timerAlarmEnable(data_timer);
+
+  long timezone = 1;
+  uint8_t daysavetime = 1;
+
+  // configure time zone and NTP servers
+  configTime(3600 * timezone, 3600 * daysavetime, "0.pool.ntp.org", "1.pool.ntp.org", "2.pool.ntp.org");
+
+  while (sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED)
+    ;
+
+  digitalWrite(LED_BUILTIN_PIN, HIGH);
 }
 
 void loop()
@@ -137,6 +149,7 @@ void loop()
   if (refresh_screen)
   {
     oled_write_bus_stop_data(current_bus_stop, &bus_stop_data, &display);
+
     refresh_screen = false;
   }
 }

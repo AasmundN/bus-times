@@ -14,6 +14,8 @@
 #include <string.h>
 #include <time.h>
 
+#define MINUTE_s 60
+
 const char *api_url_bus_stop_data = "https://mpolden.no/atb/v2/departures/42282";
 
 typedef enum
@@ -24,6 +26,33 @@ typedef enum
   FIFTEEN = 15,
   FORTY_THREE = 43,
 } line_t;
+
+void parse_departure_time(char departure_time_diff[4], const char *datetime_string)
+{
+  struct tm departure_time;
+
+  strptime(datetime_string, "%Y-%m-%dT%H:%M:%S.000", &departure_time);
+
+  time_t departure_time_unix = mktime(&departure_time);
+
+  time_t now;
+  time(&now);
+
+  int time_diff = (int)difftime(departure_time_unix, now);
+
+  if (time_diff < 1 * MINUTE_s)
+  {
+    sprintf(departure_time_diff, "<1m");
+  }
+  else if (time_diff < 60 * MINUTE_s)
+  {
+    sprintf(departure_time_diff, "%dm", time_diff / MINUTE_s);
+  }
+  else
+  {
+    sprintf(departure_time_diff, ">1h");
+  }
+}
 
 bus_stop_t bus_data_to_bus_stop(line_t line, direction_t direction)
 {
@@ -83,6 +112,15 @@ void parse_bus_data(bus_data_t *bus_data, JsonDocument *bus_data_json, uint8_t d
   {
     memcpy(bus_data->line, line, line_size);
   }
+
+  const char *departure_time = (*bus_data_json)["departures"][departure_index]["scheduledDepartureTime"];
+
+  char departure_time_diff_now[4];
+  parse_departure_time(departure_time_diff_now, departure_time);
+
+  size_t departure_time_size = strlen(departure_time_diff_now);
+
+  memcpy(bus_data->departure_time, departure_time_diff_now, departure_time_size);
 }
 
 void fetch_bus_stop_data(bus_stop_data_t *bus_stop_data)
@@ -170,7 +208,7 @@ void oled_write_bus_stop_data(bus_stop_t bus_stop, bus_stop_data_t *bus_stop_dat
     display->setCursor(0, display->height() / 4 + 8 + i * display->height() / 4);
 
     char bus_data_string[32];
-    sprintf(bus_data_string, "%s %s", bus_stop_data->busses[bus_stop][i].line, bus_stop_data->busses[bus_stop][i].dest);
+    sprintf(bus_data_string, "%s %s %s", bus_stop_data->busses[bus_stop][i].line, bus_stop_data->busses[bus_stop][i].dest, bus_stop_data->busses[bus_stop][i].departure_time);
 
     display->print(F(bus_data_string));
   }
